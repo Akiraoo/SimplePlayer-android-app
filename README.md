@@ -66,7 +66,7 @@ app/build/outputs/apk/debug/app-debug.apk
 app/build/outputs/apk/release/app-release.apk
 ```
 
-本專案不提供預先編譯好的 APK。
+本專案提供預先編譯好的 APK。
 
 使用者可以直接在 Android Studio 中依自己的環境與需求進行 Build。
 
@@ -174,7 +174,7 @@ Simple Player Mobile API
 
 清除 App Cache 或 App 資料也不會影響 Server 上的原始音樂檔案。
 
-## 技術
+## 環境
 
 | Component         |    Version |
 | ----------------- | ---------: |
@@ -188,7 +188,7 @@ Simple Player Mobile API
 | Coil              |      2.7.0 |
 | Kotlin Coroutines |     1.10.1 |
 
-## Signing
+## APK簽名
 
 本專案不包含作者個人的 Android signing key。
 
