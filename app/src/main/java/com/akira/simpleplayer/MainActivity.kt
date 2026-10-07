@@ -8,12 +8,12 @@ package com.akira.simpleplayer
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.annotation.SuppressLint
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -120,6 +120,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.akira.simpleplayer.data.LyricLine
 import com.akira.simpleplayer.data.SimplePlayerApi
+import com.akira.simpleplayer.update.Updater
 import com.akira.simpleplayer.data.Track
 import com.akira.simpleplayer.playback.PlaybackService
 import com.akira.simpleplayer.playback.SpectrumEngine
@@ -423,6 +424,95 @@ class PlayerViewModel : ViewModel() {
                         lyrics = cachedMeta.second
                     }
                 }
+            }
+        }
+    }
+
+    // ---------- App update (GitHub Releases) ----------
+
+    var updateRelease by mutableStateOf<Updater.Release?>(null)
+        private set
+
+    var updateMessage by mutableStateOf<String?>(null)
+        private set
+
+    var updateChecking by mutableStateOf(false)
+        private set
+
+    /** -1 = not downloading, 0..1 = download progress. */
+    var updateProgress by mutableFloatStateOf(-1f)
+        private set
+
+    val installedVersion: String
+        get() = Updater.installedVersion(AppPrefs.context)
+
+    fun checkUpdate() {
+        if (updateChecking || updateProgress >= 0f) return
+
+        viewModelScope.launch {
+            updateChecking = true
+            updateMessage = null
+            updateRelease = null
+
+            try {
+                val r = Updater.latest()
+
+                when {
+                    r == null ->
+                        updateMessage = "找不到發布版本"
+
+                    Updater.isNewer(r.version, installedVersion) -> {
+                        updateRelease = r
+                        updateMessage = "發現新版本 ${r.version}"
+                    }
+
+                    else ->
+                        updateMessage = "已是最新版本"
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                updateMessage =
+                    "檢查更新失敗：" +
+                            (e.localizedMessage ?: e.javaClass.simpleName)
+            } finally {
+                updateChecking = false
+            }
+        }
+    }
+
+    fun installUpdate() {
+        val release = updateRelease ?: return
+        if (updateProgress >= 0f) return
+
+        val ctx = AppPrefs.context
+
+        if (!Updater.canInstall(ctx)) {
+            updateMessage = "請先允許本 App 安裝應用程式，返回後再按一次"
+            Updater.openInstallPermission(ctx)
+            return
+        }
+
+        viewModelScope.launch {
+            updateProgress = 0f
+            updateMessage = "下載中…"
+
+            try {
+                val apk =
+                    Updater.download(ctx, release) {
+                        updateProgress = it
+                    }
+
+                updateMessage = "下載完成，請在系統畫面確認安裝"
+                Updater.install(ctx, apk)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                updateMessage =
+                    "更新失敗：" +
+                            (e.localizedMessage ?: e.javaClass.simpleName)
+            } finally {
+                updateProgress = -1f
             }
         }
     }
@@ -1258,6 +1348,10 @@ fun PlayerApp(
                     )
                 },
                 text = {
+                    Column(
+                        verticalArrangement =
+                            Arrangement.spacedBy(14.dp)
+                    ) {
                     OutlinedTextField(
                         value = localBase,
                         onValueChange = {
@@ -1289,6 +1383,9 @@ fun PlayerApp(
                                 cursorColor = appText()
                             )
                     )
+
+                    UpdateSection(vm)
+                    }
                 },
                 confirmButton = {
                     TextButton(
@@ -1404,6 +1501,96 @@ fun TopBar(
                     "設定",
                     tint = appText()
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun UpdateSection(
+    vm: PlayerViewModel
+) {
+    val release = vm.updateRelease
+    val downloading = vm.updateProgress >= 0f
+
+    Column(
+        verticalArrangement =
+            Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            "應用程式更新",
+            color = appText(),
+            fontWeight = FontWeight.SemiBold
+        )
+
+        Text(
+            "目前版本 ${vm.installedVersion}",
+            color = appMuted(),
+            style =
+                MaterialTheme.typography.bodySmall
+        )
+
+        vm.updateMessage?.let {
+            Text(
+                it,
+                color = appText(),
+                style =
+                    MaterialTheme.typography.bodySmall
+            )
+        }
+
+        if (release != null && release.notes.isNotBlank()) {
+            Text(
+                release.notes,
+                color = appMuted(),
+                style =
+                    MaterialTheme.typography.bodySmall,
+                maxLines = 6,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        if (downloading) {
+            LinearProgressIndicator(
+                progress = {
+                    vm.updateProgress.coerceIn(0f, 1f)
+                },
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(4.dp),
+                color = appText(),
+                trackColor =
+                    appMuted().copy(alpha = .22f)
+            )
+        }
+
+        Row(
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+            TextButton(
+                enabled =
+                    !vm.updateChecking && !downloading,
+                onClick = { vm.checkUpdate() }
+            ) {
+                Text(
+                    if (vm.updateChecking) "檢查中…" else "檢查更新",
+                    color = appText()
+                )
+            }
+
+            if (release != null) {
+                TextButton(
+                    enabled = !downloading,
+                    onClick = { vm.installUpdate() }
+                ) {
+                    Text(
+                        "下載並安裝",
+                        color = appText(),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }

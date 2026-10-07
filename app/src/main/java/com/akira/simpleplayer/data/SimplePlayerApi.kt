@@ -27,6 +27,27 @@ class SimplePlayerApi(baseUrl: String, cacheDir: File) {
     private val apiCacheDir = File(cacheDir, "api").apply { mkdirs() }
     private val coverDir = File(cacheDir, "cover-files").apply { mkdirs() }
 
+    /**
+     * Public URL of the server (its `publicOrigin` setting), read from /api/config.
+     * Empty for a pure-LAN deployment; share links then fall back to the API address.
+     *
+     * Filled by refreshServerConfig(). Callers must not mutate it directly.
+     */
+    @Volatile
+    var publicOrigin: String = ""
+        private set
+
+    /** Web (player) port advertised by the server. -1 when unknown. */
+    @Volatile
+    var webPort: Int = -1
+        private set
+
+    init {
+        // The app only talks to the server on resync, so keep the last /api/config answer
+        // on disk; share links then stay correct after the app restarts.
+        readCache("config.json")?.let { runCatching { applyServerConfig(it) } }
+    }
+
     private fun urlFor(path: String) =
         URL(if (base.startsWith("http://") || base.startsWith("https://")) base + path else "http://$base$path")
 
@@ -51,6 +72,30 @@ class SimplePlayerApi(baseUrl: String, cacheDir: File) {
             if (code !in 200..299) error("HTTP $code: $text")
             text
         } finally { c.disconnect() }
+    }
+
+    /**
+     * Reads /api/config and stores publicOrigin / webPort (used for share links).
+     *
+     * Never throws. A server without the endpoint (older build) simply keeps
+     * the defaults set at construction.
+     */
+    suspend fun refreshServerConfig() {
+        runCatching {
+            val raw = request("/api/config")
+            applyServerConfig(raw)
+            writeCache("config.json", raw)
+        }
+    }
+
+    private fun applyServerConfig(raw: String) {
+        val o = JSONObject(raw)
+        // An empty publicOrigin means the server is LAN-only: clear any value from an older answer.
+        publicOrigin = o.optString("publicOrigin").trim().trimEnd('/')
+        val wp = o.optInt("webPort", -1)
+        if (wp > 0) {
+            webPort = wp
+        }
     }
 
     fun cachedLibrary(): List<Track>? = readCache("library.json")?.let(::parseLibrarySafe)
@@ -80,13 +125,16 @@ class SimplePlayerApi(baseUrl: String, cacheDir: File) {
 
     /**
      * Full resync. The only place that talks to the server for the library:
-     *  1. fetch library + playlists
-     *  2. download metadata / cover for new or changed tracks (and any that are missing locally)
-     *  3. delete cached metadata / covers of tracks that no longer exist on the server
-     *  4. only then replace library.json / playlists.json
-     * If anything throws before step 4 the previous snapshot stays intact.
+     *  1. read /api/config so share links use the server's public address
+     *  2. fetch library + playlists
+     *  3. download metadata / cover for new or changed tracks (and any that are missing locally)
+     *  4. delete cached metadata / covers of tracks that no longer exist on the server
+     *  5. only then replace library.json / playlists.json
+     * If anything throws before step 5 the previous snapshot stays intact.
      */
     suspend fun sync(onProgress: (done: Int, total: Int) -> Unit): SyncResult {
+        refreshServerConfig()
+
         val oldById = cachedLibrary().orEmpty().associateBy { it.id }
 
         val rawLibrary = request("/api/library")
@@ -137,6 +185,7 @@ class SimplePlayerApi(baseUrl: String, cacheDir: File) {
         val keepApi = tracks.mapTo(HashSet()) { metadataFileName(it.id) }.apply {
             add("library.json")
             add("playlists.json")
+            add("config.json")
         }
         apiCacheDir.listFiles()?.forEach { if (it.name !in keepApi) it.delete() }
 
@@ -167,6 +216,7 @@ class SimplePlayerApi(baseUrl: String, cacheDir: File) {
     }
 
     fun streamUrl(id: String) = "$base/stream/${enc(id)}"
+
     fun webShareUrl(id: String) = webBase() + "/s/${enc(id)}"
     fun webDirectUrl(id: String) = webBase() + "/d/${enc(id)}"
     fun webPlaylistUrl(name: String) = webBase() + "/p/${enc(name)}"
@@ -237,11 +287,30 @@ class SimplePlayerApi(baseUrl: String, cacheDir: File) {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * Base URL used for share / download links.
+     *
+     *  - The server's publicOrigin (from /api/config) wins, so shared links work outside the LAN.
+     *  - An API address without a port (e.g. https://music.example.com behind a reverse proxy)
+     *    is used as-is: the proxy already serves the web player there.
+     *  - Otherwise use the web port advertised by /api/config,
+     *    or the legacy convention API 8788 -> web 8787, or the same port.
+     */
     private fun webBase(): String {
-        val u = runCatching { URL(if (base.startsWith("http://") || base.startsWith("https://")) base else "http://$base") }.getOrNull() ?: return base
+        if (publicOrigin.isNotBlank()) return publicOrigin
+
+        val u = runCatching {
+            URL(if (base.startsWith("http://") || base.startsWith("https://")) base else "http://$base")
+        }.getOrNull() ?: return base
+
         if (u.port == -1) return URL(u.protocol, u.host, -1, "").toString().trimEnd('/')
-        val port = if (u.port == 8788) 8787 else u.port
-        return URL(u.protocol, u.host, port, "").toString().trimEnd('/')
+
+        val resolvedPort = when {
+            webPort > 0 -> webPort
+            u.port == 8788 -> 8787
+            else -> u.port
+        }
+        return URL(u.protocol, u.host, resolvedPort, "").toString().trimEnd('/')
     }
 
     private fun enc(v: String) = java.net.URLEncoder.encode(v, "UTF-8").replace("+", "%20")

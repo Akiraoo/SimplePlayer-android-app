@@ -14,6 +14,10 @@ Simple Player 的 Android Client。
 * 封面顯示
 * 歌詞顯示
 * 本地 Metadata Cache
+* 背景播放
+* 音訊頻譜顯示
+* 歌曲 / 播放清單分享連結與下載
+* App 內檢查更新（GitHub Releases）
 * 與 Simple Player Web Server 整合
 
 ## Requirements
@@ -60,15 +64,15 @@ APK 會輸出至：
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-或：
-
 ```text
-app/build/outputs/apk/release/app-release.apk
+app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-本專案提供預先編譯好的 APK。
+Debug APK 使用 Android 的 debug key 簽章，可以直接安裝測試。
 
-使用者可以直接在 Android Studio 中依自己的環境與需求進行 Build。
+Release APK 預設**未簽章**，無法直接安裝，需要先用自己的 signing key 簽章，詳見下方「APK 簽名」。
+
+不想自己 Build 的話，可以直接從 [GitHub Releases](https://github.com/Akiraoo/SimplePlayer-android-app/releases) 下載預先編譯好的 APK。
 
 ## Package Name
 
@@ -124,6 +128,15 @@ http://192.168.0.100:8788
 ```
 
 其中 `192.168.0.100` 必須替換成實際執行 Simple Player Server 的電腦 LAN IP。
+
+如果 Server 是透過反向代理對外開放（例如 `https://music.example.com`），直接填入對外網址即可，不需要加上 Port。
+
+### 分享連結
+
+App 同步時會讀取 Server 的 `/api/config`：
+
+* Server 有設定 `publicOrigin` 時，分享與下載連結會使用該公開網址，傳給區域網路以外的人也能開啟。
+* 沒有設定時，會以 App 填入的 API 位址推算 Web Player 網址（例如 `:8788` → `:8787`）。
 
 ### 注意
 
@@ -187,6 +200,40 @@ Simple Player Mobile API
 | AndroidX Media3   |      1.5.1 |
 | Coil              |      2.7.0 |
 | Kotlin Coroutines |     1.10.1 |
+
+## App 內更新
+
+設定畫面中的「應用程式更新」會向 GitHub Releases 查詢最新版本，有新版時可以直接下載並交給系統安裝。
+
+運作方式：
+
+* 讀取 Repository 的最新 Release（`/releases/latest`），並使用該 Release 附加的第一個 `.apk` 檔。
+* 以 Release 的 Tag（例如 `v1.2.0`）與 App 的 `versionName`（例如 `1.2.0`）比較版本。
+* 第一次安裝時，Android 會要求允許本 App「安裝未知應用程式」。
+
+### 發布新版本時
+
+1. 在 `app/build.gradle.kts` 調高 `versionCode`，並將 `versionName` 設為與 Release Tag 相同的版本號（不含 `v`）。
+2. 以**同一把** signing key 簽章 Release APK。簽章不同時，Android 會拒絕覆蓋安裝。
+3. 在 GitHub 建立 Release（Tag 例如 `v1.2.0`），並附上簽章後的 `.apk`。
+
+### Fork 時改成自己的 Repository
+
+App 預設檢查本專案的 Releases。如果你發布自己的版本，請修改：
+
+```text
+app/src/main/java/com/akira/simpleplayer/update/Updater.kt
+```
+
+中的：
+
+```kotlin
+const val REPO = "Akiraoo/SimplePlayer-android-app"
+```
+
+改成你自己的 `擁有者/Repository名稱`。
+
+否則你的 App 會收到本專案的更新，而且因為簽章不同，也無法安裝。
 
 ## APK簽名
 

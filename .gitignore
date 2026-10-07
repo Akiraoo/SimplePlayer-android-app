@@ -1,0 +1,21 @@
+# Gradle
+.gradle/
+build/
+.kotlin/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+captures/
+.cxx/
+.externalNativeBuild/
+
+# Signing keys (never commit)
+*.jks
+*.keystore
+keystore.properties
+
+# Build outputs
+*.apk
+*.aab

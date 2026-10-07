@@ -29,8 +29,12 @@ android {
         applicationId = "com.akira.simpleplayer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        // Must stay above every APK already released (v1.1.0 shipped with 42),
+        // otherwise Android refuses to install the update over it.
+        versionCode = 44
+        // The in-app updater compares this with the GitHub Release tag (v1.2.0 -> "1.2.0"),
+        // so it must match the tag of the release this APK is published under.
+        versionName = "1.2.0"
     }
 
     buildTypes {
