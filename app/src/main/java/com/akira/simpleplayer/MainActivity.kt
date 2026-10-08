@@ -23,6 +23,9 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -50,7 +53,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -333,6 +336,8 @@ class PlayerViewModel : ViewModel() {
                                 }
                             }
                         })
+
+                        restoreIntoController()
                     } else {
                         Log.e(
                             "PlayerViewModel",
@@ -414,6 +419,9 @@ class PlayerViewModel : ViewModel() {
 
                 if (saved != null) {
                     current = saved
+                    position = prefs.lastPosition()
+                    duration = prefs.lastDuration()
+                    restoreIntoController()
 
                     val cachedMeta =
                         withContext(AppExecutors.io) {
@@ -688,46 +696,7 @@ class PlayerViewModel : ViewModel() {
         val activeApi = getApi()
 
         controller?.let { c ->
-            val queue = visibleTracks
-
-            val source =
-                if (queue.any { it.id == track.id }) {
-                    queue
-                } else {
-                    listOf(track)
-                }
-
-            val items = source.map { t ->
-                val sUrl =
-                    activeApi?.streamUrl(t.id) ?: ""
-
-                val cFile =
-                    if (t.hasCover) activeApi?.cachedCover(t.id) else null
-
-                MediaItem.Builder()
-                    .setMediaId(t.id)
-                    .setUri(Uri.parse(sUrl))
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(t.title)
-                            .setArtist(t.artist)
-                            .setAlbumTitle(t.album)
-                            .apply {
-                                if (cFile != null) {
-                                    setArtworkUri(
-                                        Uri.fromFile(cFile)
-                                    )
-                                }
-                            }
-                            .build()
-                    )
-                    .build()
-            }
-
-            val index =
-                source.indexOfFirst {
-                    it.id == track.id
-                }.coerceAtLeast(0)
+            val (items, index) = buildQueue(track, activeApi)
 
             c.setMediaItems(
                 items,
@@ -742,6 +711,82 @@ class PlayerViewModel : ViewModel() {
         loadLyricsFromCache(track.id)
 
         startTicker()
+    }
+
+    /** Queue for [track]: the list it is shown in, falling back to its playlist / the library. */
+    private fun buildQueue(
+        track: Track,
+        activeApi: SimplePlayerApi?
+    ): Pair<List<MediaItem>, Int> {
+        val inView =
+            if (selectedView == "Library") {
+                library
+            } else {
+                val ids = playlists[selectedView].orEmpty().toHashSet()
+                library.filter { it.id in ids }
+            }
+
+        val source =
+            when {
+                visibleTracks.any { it.id == track.id } -> visibleTracks
+                inView.any { it.id == track.id } -> inView
+                else -> listOf(track)
+            }
+
+        val items = source.map { t ->
+            val sUrl =
+                activeApi?.streamUrl(t.id) ?: ""
+
+            val cFile =
+                if (t.hasCover) activeApi?.cachedCover(t.id) else null
+
+            MediaItem.Builder()
+                .setMediaId(t.id)
+                .setUri(Uri.parse(sUrl))
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(t.title)
+                        .setArtist(t.artist)
+                        .setAlbumTitle(t.album)
+                        .apply {
+                            if (cFile != null) {
+                                setArtworkUri(
+                                    Uri.fromFile(cFile)
+                                )
+                            }
+                        }
+                        .build()
+                )
+                .build()
+        }
+
+        val index =
+            source.indexOfFirst {
+                it.id == track.id
+            }.coerceAtLeast(0)
+
+        return items to index
+    }
+
+    /**
+     * After the app is reopened the playback service is usually gone, so the controller is empty
+     * while the UI already shows the last track. Put that track back (at the saved position) so the
+     * mini player's play button works. Not prepared: nothing is downloaded until the user presses play.
+     * Does nothing if the service is still alive with its own queue.
+     */
+    private fun restoreIntoController() {
+        val c = controller ?: return
+        val track = current ?: return
+
+        if (c.mediaItemCount > 0) return
+
+        val (items, index) = buildQueue(track, getApi())
+        if (items.isEmpty()) return
+
+        val start =
+            if (prefs.lastTrackId() == track.id) prefs.lastPosition() else 0L
+
+        c.setMediaItems(items, index, start.coerceAtLeast(0L))
     }
 
     private fun updateCurrentFromId(id: String) {
@@ -789,13 +834,23 @@ class PlayerViewModel : ViewModel() {
     }
 
     fun togglePlay() {
-        controller?.let {
-            if (it.isPlaying) {
-                it.pause()
-            } else {
-                it.play()
-            }
+        val c = controller ?: return
+
+        if (c.isPlaying) {
+            c.pause()
+            return
         }
+
+        if (c.mediaItemCount == 0) {
+            current?.let { play(it) }
+            return
+        }
+
+        if (c.playbackState == Player.STATE_IDLE) {
+            c.prepare()
+        }
+
+        c.play()
     }
 
     fun seekTo(ms: Long) {
@@ -842,16 +897,33 @@ class PlayerViewModel : ViewModel() {
                         val playing = c.isPlaying
 
                         isPlaying = playing
-                        position = c.currentPosition.coerceAtLeast(0L)
-                        duration = c.duration.coerceAtLeast(0L)
+
+                        // An empty controller (fresh service after the app was closed) reports
+                        // position 0. Never let that overwrite the restored / saved position.
+                        val holdsCurrent =
+                            c.mediaItemCount > 0 &&
+                                    current != null &&
+                                    c.currentMediaItem?.mediaId == current?.id
+
+                        if (holdsCurrent) {
+                            position = c.currentPosition.coerceAtLeast(0L)
+                            if (c.duration > 0L) {
+                                duration = c.duration
+                            }
+                        }
+
+                        val loaded =
+                            holdsCurrent &&
+                                    c.playbackState != Player.STATE_IDLE
 
                         val second = position / 1000L
-                        if (second != lastSavedSecond) {
+                        if (loaded && second != lastSavedSecond) {
                             lastSavedSecond = second
                             current?.let {
                                 prefs.savePlayback(
                                     it.id,
-                                    position
+                                    position,
+                                    duration
                                 )
                             }
                         }
@@ -1069,13 +1141,21 @@ class AppPrefs private constructor() {
             0L
         )
 
+    fun lastDuration(): Long =
+        prefs.getLong(
+            "last_duration",
+            0L
+        )
+
     fun savePlayback(
         id: String,
-        position: Long
+        position: Long,
+        duration: Long
     ) {
         prefs.edit {
             putString("last_track", id)
             putLong("last_position", position)
+            putLong("last_duration", duration)
         }
     }
 }
@@ -1886,8 +1966,26 @@ fun MobileLayout(
         mutableStateOf(MobilePage.PLAYLISTS)
     }
 
+    // Horizontal offset (px) of the song list while it is being swiped back.
+    // The playlist grid is drawn underneath during the swipe, so when the swipe
+    // finishes the page switch needs no second animation.
+    val backSwipe = remember { Animatable(0f) }
+    var instantBack by remember { mutableStateOf(false) }
+
+    val screenWidthPx =
+        with(LocalDensity.current) {
+            LocalConfiguration.current.screenWidthDp.dp.toPx()
+        }
+
     BackHandler(enabled = page == MobilePage.SONGS) {
         page = MobilePage.PLAYLISTS
+    }
+
+    LaunchedEffect(page) {
+        if (page == MobilePage.PLAYLISTS) {
+            backSwipe.snapTo(0f)
+            instantBack = false
+        }
     }
 
     Box(
@@ -1895,9 +1993,36 @@ fun MobileLayout(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        if (page == MobilePage.SONGS && backSwipe.value > 0f) {
+            val p = (backSwipe.value / screenWidthPx).coerceIn(0f, 1f)
+
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        // Same parallax as the tap-back transition: starts 1/3 to the left.
+                        translationX = -(screenWidthPx / 3f) * (1f - p)
+                    }
+            ) {
+                PlaylistGrid(vm) { name ->
+                    vm.selectView(name)
+                    page = MobilePage.SONGS
+                }
+
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = .25f * (1f - p)))
+                )
+            }
+        }
+
         AnimatedContent(
             targetState = page,
             transitionSpec = {
+                if (instantBack) {
+                    EnterTransition.None.togetherWith(ExitTransition.None)
+                } else run {
                 val forward = targetState == MobilePage.SONGS
                 val duration = 280
                 if (forward) {
@@ -1925,6 +2050,7 @@ fun MobileLayout(
                         ) + fadeOut(tween(duration))
                     )
                 }
+                }
             },
             label = "mobilePage"
         ) { currentPage ->
@@ -1936,7 +2062,14 @@ fun MobileLayout(
                     }
 
                 MobilePage.SONGS ->
-                    SongListPage(vm) {
+                    SongListPage(
+                        vm,
+                        offsetX = backSwipe,
+                        onSwipedBack = {
+                            instantBack = true
+                            page = MobilePage.PLAYLISTS
+                        }
+                    ) {
                         page = MobilePage.PLAYLISTS
                     }
             }
@@ -1987,8 +2120,35 @@ fun PlaylistGrid(
             }
         }
 
+    // This page leaves composition while a playlist is open, so keep its scroll
+    // position in the ViewModel (and prefs) like SongListPage does.
+    val gridKey = "__playlist_grid__"
+
     val gridState =
-        rememberLazyGridState()
+        remember {
+            val (idx, off) = vm.getScrollPos(gridKey)
+            LazyGridState(idx, off)
+        }
+
+    LaunchedEffect(gridState) {
+        snapshotFlow {
+            gridState.firstVisibleItemIndex to
+                    gridState.firstVisibleItemScrollOffset
+        }.collectLatest { (idx, off) ->
+            delay(400L)
+            vm.saveScrollPos(gridKey, idx, off)
+        }
+    }
+
+    DisposableEffect(gridState) {
+        onDispose {
+            vm.saveScrollPos(
+                gridKey,
+                gridState.firstVisibleItemIndex,
+                gridState.firstVisibleItemScrollOffset
+            )
+        }
+    }
 
     Column(
         Modifier.fillMaxSize()
@@ -2115,6 +2275,8 @@ fun PlaylistCard(
 @Composable
 fun SongListPage(
     vm: PlayerViewModel,
+    offsetX: Animatable<Float, AnimationVector1D>,
+    onSwipedBack: () -> Unit,
     onBack: () -> Unit
 ) {
     val tracks = vm.visible
@@ -2178,9 +2340,8 @@ fun SongListPage(
             configuration.screenWidthDp.dp.toPx()
         }
 
-    val offsetX = remember { Animatable(0f) }
     val dragScope = rememberCoroutineScope()
-    val currentOnBack by rememberUpdatedState(onBack)
+    val currentOnSwipedBack by rememberUpdatedState(onSwipedBack)
 
     Box(
         Modifier
@@ -2220,7 +2381,8 @@ fun SongListPage(
                                         easing = SheetEasing
                                     )
                                 )
-                                currentOnBack()
+                                // The playlist grid is already fully in place underneath.
+                                currentOnSwipedBack()
                             }
                         } else {
                             dragScope.launch {
@@ -3198,12 +3360,11 @@ fun PlaylistChoice(
  *
  *  Web 版 (public/app.js setupMiniSwipe / setupNowSwipe + .now-sheet CSS):
  *
- *   1. 拖拽期間
+ *   1. 拖拽期間（mini player 往上滑）
  *        - 手指往上滑時，sheet 的 translateY 由 (1 - progress) * 100% 驅動，
- *          整個 sheet 一起滑上來。
- *        - 內容（封面、標題、頻譜、進度、控制、歌詞）在這個階段只是被
- *          sheet 帶著移動，本身不做錯開入場 → 也就是看得到的部分不會
- *          隨著你拖到哪裡才「分段出現」。
+ *          整個 sheet 一起滑上來，overlay opacity = progress。
+ *        - 此時還沒有 is-open，所以只看得到略微縮小（scale .94、opacity .7）
+ *          的封面；標題、頻譜、進度、控制、歌詞都還是隱藏的。
  *
  *   2. 鬆手
  *        - 判定 progress >= .68 或 fling velocity 夠大 → is-open 打開
@@ -3219,9 +3380,10 @@ fun PlaylistChoice(
  *   - sheet.progress  : sheet 位置 (0 = 底部外, 1 = 全螢幕)
  *   - sheet.contentProgress : 內容錯開入場 (0 = 全部隱藏, 1 = 全部顯示)
  *
- *  拖拽開始 → contentProgress 直接設為 1（= 內容可見、被 sheet 帶著走）
- *  鬆手打開 → 若內容已可見（拖拽過）就不再錯開，只讓 sheet 滑完剩下的距離；
- *              若內容是隱藏的（例如點一下 mini player）才播放錯開入場。
+ *  mini player 上滑 → 只推進 progress，contentProgress 保持 0
+ *                     （= 只有縮小的封面，其他元件隱藏）
+ *  鬆手打開 → 跟點擊一樣：sheet 從當前位置滑完，同時播放錯開入場。
+ *  全螢幕往下滑 → 內容本來就是顯示狀態，跟著 sheet 一起移動。
  * ------------------------------------------------------------------------ */
 
 private const val SHEET_MS = 380            // 全螢幕面板滑入 / 滑出的時間
@@ -3243,15 +3405,13 @@ class NowSheetController(
     val contentProgress = Animatable(0f)
 
     /**
-     * 拖拽跟手。第一次拖曳時把 contentProgress 直接設為 1，讓 sheet 內的
-     * 內容是「已經排好的樣子」被帶著走（對應網頁版拖曳時 sheet 內容本來就
-     * 全部可見、不做錯開入場）。
+     * 拖拽跟手，只移動 sheet，不碰 contentProgress：
+     *  - 從 mini player 上滑時內容是隱藏的（contentProgress = 0），
+     *    所以只看得到縮小的封面，鬆手後才依序入場（同網頁版）。
+     *  - 全螢幕往下滑時內容本來就是顯示的，會跟著 sheet 一起移動。
      */
     fun drag(p: Float) {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            if (contentProgress.value < 0.5f) {
-                contentProgress.snapTo(1f)
-            }
             progress.snapTo(p.coerceIn(0f, 1f))
         }
     }
@@ -3270,14 +3430,15 @@ class NowSheetController(
             val wasVisible = contentProgress.value > 0.5f
 
             if (wasVisible) {
-                // 從拖曳過渡：內容已可見，只讓 sheet 完成剩下的距離。
+                // 內容已可見（例如往下滑到一半又放回去）：只讓 sheet 完成剩下的距離。
                 contentProgress.snapTo(1f)
                 progress.animateTo(
                     targetValue = 1f,
                     animationSpec = tween(SHEET_MS, easing = SheetEasing)
                 )
             } else {
-                // 從關閉過渡：內容錯開入場，同時 sheet 從當前位置滑上去。
+                // 點擊或從 mini player 上滑後鬆手：內容錯開入場，
+                // 同時 sheet 從當前位置滑上去。
                 contentProgress.snapTo(0f)
                 kotlinx.coroutines.coroutineScope {
                     launch {
