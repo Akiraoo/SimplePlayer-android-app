@@ -62,7 +62,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -233,7 +236,18 @@ class PlayerViewModel : ViewModel() {
     var showPlaylistSheet by mutableStateOf(false)
     var showNowPlaying by mutableStateOf(false)
     var showSettings by mutableStateOf(false)
+    var showCustomPlaylists by mutableStateOf(false)
 
+    /** Custom share playlist picking. In select mode a tap on a track row highlights it instead of playing. */
+    var selectMode by mutableStateOf(false)
+    val customPicked = mutableStateListOf<String>()
+    var customStartEditor by mutableStateOf(false)
+
+    fun toggleCustomPick(id: String) {
+        if (!customPicked.remove(id) && customPicked.size < CustomPlaylistStore.MAX_TRACKS) {
+            customPicked.add(id)
+        }
+    }
     /** Bumped after every successful resync so cover images re-read their local files. */
     var syncVersion by mutableIntStateOf(0)
         private set
@@ -994,6 +1008,17 @@ class PlayerViewModel : ViewModel() {
         AppPrefs.context.startActivity(intent)
     }
 
+    /** Web link of a custom share playlist (/c/<id>), on the same host as the /p/ links. */
+    fun customPlaylistUrl(id: String): String {
+        val p = getApi()?.webPlaylistUrl(id)
+        val i = p?.lastIndexOf("/p/") ?: -1
+        return if (p != null && i >= 0) {
+            p.substring(0, i) + "/c/" + p.substring(i + 3)
+        } else {
+            apiBase.trimEnd('/') + "/c/" + id
+        }
+    }
+
     fun sharePlaylist(name: String) {
         val url =
             getApi()?.webPlaylistUrl(name) ?: return
@@ -1400,7 +1425,7 @@ fun PlayerApp(
             }
         }
 
-        if (showMini) {
+        if (showMini && !vm.selectMode) {
             Box(
                 Modifier.align(
                     Alignment.BottomCenter
@@ -1410,6 +1435,21 @@ fun PlayerApp(
             }
         }
 
+        if (vm.selectMode) {
+            Box(
+                Modifier.align(
+                    Alignment.BottomCenter
+                )
+            ) {
+                CustomSelectBar(vm)
+            }
+        }
+
+        if (vm.showCustomPlaylists) {
+            CustomPlaylistScreen(vm) {
+                vm.showCustomPlaylists = false
+            }
+        }
         if (vm.showPlaylistSheet) {
             PlaylistSheet(vm)
         }
@@ -2173,8 +2213,19 @@ fun PlaylistGrid(
                 modifier =
                     Modifier.weight(1f)
             )
-        }
 
+            IconButton(
+                onClick = {
+                    vm.showCustomPlaylists = true
+                }
+            ) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "建立自訂播放清單",
+                    tint = appText()
+                )
+            }
+        }
         LazyVerticalGrid(
             columns =
                 GridCells.Fixed(2),
@@ -2186,7 +2237,13 @@ fun PlaylistGrid(
                     start = 12.dp,
                     end = 12.dp,
                     top = 4.dp,
-                    bottom = 22.dp
+                    // Leave room for the mini player / select bar floating over the bottom.
+                    bottom =
+                        if (vm.current != null || vm.selectMode) {
+                            120.dp
+                        } else {
+                            22.dp
+                        }
                 ),
             horizontalArrangement =
                 Arrangement.spacedBy(12.dp),
@@ -2427,7 +2484,7 @@ fun SongListPage(
             contentPadding =
                 PaddingValues(
                     bottom =
-                        if (vm.current != null) {
+                        if (vm.current != null || vm.selectMode) {
                             96.dp
                         } else {
                             24.dp
@@ -2593,8 +2650,42 @@ fun SongListPage(
                             FontWeight.SemiBold,
                         maxLines = 1,
                         overflow =
-                            TextOverflow.Ellipsis
+                            TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+
+                if (vm.selectMode) {
+                    val allPicked =
+                        tracks.isNotEmpty() &&
+                                tracks.all { it.id in vm.customPicked }
+                    TextButton(
+                        onClick = {
+                            if (allPicked) {
+                                vm.customPicked.removeAll(tracks.map { it.id }.toSet())
+                            } else {
+                                tracks.forEach {
+                                    if (it.id !in vm.customPicked &&
+                                        vm.customPicked.size < CustomPlaylistStore.MAX_TRACKS
+                                    ) {
+                                        vm.customPicked.add(it.id)
+                                    }
+                                }
+                            }
+                        }
+                    ) {
+                        Text(
+                            if (allPicked) "取消全選" else "全選",
+                            color =
+                                if (collapsed) {
+                                    appText()
+                                } else {
+                                    Color.White
+                                }
+                        )
+                    }
                 }
             }
         }
@@ -2608,6 +2699,8 @@ fun PowerampTrackRow(
 ) {
     val active =
         vm.current?.id == track.id
+    val picked =
+        vm.selectMode && track.id in vm.customPicked
 
     Row(
         Modifier
@@ -2616,15 +2709,21 @@ fun PowerampTrackRow(
                 RoundedCornerShape(12.dp)
             )
             .background(
-                if (active) {
+                if (picked) {
+                    appText().copy(alpha = .16f)
+                } else if (active && !vm.selectMode) {
                     appText().copy(alpha = .08f)
                 } else {
                     Color.Transparent
                 }
             )
             .clickable {
-                vm.play(track)
-                vm.showNowPlaying = true
+                if (vm.selectMode) {
+                    vm.toggleCustomPick(track.id)
+                } else {
+                    vm.play(track)
+                    vm.showNowPlaying = true
+                }
             }
             .padding(vertical = 8.dp),
         verticalAlignment =
@@ -2688,16 +2787,25 @@ fun PowerampTrackRow(
             )
         }
 
-        IconButton(
-            onClick = {
-                vm.requestShare(track)
-            }
-        ) {
+        if (vm.selectMode) {
             Icon(
-                Icons.Default.Share,
-                "分享",
-                tint = appMuted()
+                if (picked) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                if (picked) "已選取" else "未選取",
+                tint = if (picked) appText() else appMuted(),
+                modifier = Modifier.padding(12.dp)
             )
+        } else {
+            IconButton(
+                onClick = {
+                    vm.requestShare(track)
+                }
+            ) {
+                Icon(
+                    Icons.Default.Share,
+                    "分享",
+                    tint = appMuted()
+                )
+            }
         }
     }
 }
