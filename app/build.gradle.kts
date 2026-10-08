@@ -1,8 +1,34 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Optional release signing. keystore.properties (never committed, see .gitignore):
+//   storeFile=simpleplayer.jks      (absolute, or relative to keystore.properties itself)
+//   storePassword=...
+//   keyAlias=...
+//   keyPassword=...
+// Looked up in this order:
+//   1. keystore.properties in the project root
+//   2. the Gradle property simpleplayer.keystoreProperties
+//      (e.g. in ~/.gradle/gradle.properties, so the path stays out of this repo)
+//   3. the environment variable SIMPLEPLAYER_KEYSTORE_PROPERTIES
+// With it, assembleRelease produces a signed APK. Without it, the release APK is unsigned.
+val keystorePropertiesFile: File? = listOfNotNull(
+    rootProject.file("keystore.properties"),
+    (findProperty("simpleplayer.keystoreProperties") as String?)?.takeIf { it.isNotBlank() }?.let { File(it) },
+    System.getenv("SIMPLEPLAYER_KEYSTORE_PROPERTIES")?.takeIf { it.isNotBlank() }?.let { File(it) }
+).firstOrNull { it.isFile }
+
+val keystoreProperties = Properties().apply {
+    keystorePropertiesFile?.inputStream()?.use { load(it) }
+}
+val hasReleaseKey = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { !keystoreProperties.getProperty(it).isNullOrBlank() }
 
 android {
     namespace = "com.akira.simpleplayer"
@@ -37,6 +63,18 @@ android {
         versionName = "1.2.0"
     }
 
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                val path = File(keystoreProperties.getProperty("storeFile"))
+                storeFile = if (path.isAbsolute) path else File(keystorePropertiesFile!!.parentFile, path.path)
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         // Compose is dramatically slower in debug builds (no R8, no inlining/AOT).
         // Judge scroll / animation smoothness on THIS build, not on debug:
@@ -49,6 +87,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseKey) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }

@@ -70,7 +70,7 @@ app/build/outputs/apk/release/app-release-unsigned.apk
 
 Debug APK 使用 Android 的 debug key 簽章，可以直接安裝測試。
 
-Release APK 預設**未簽章**，無法直接安裝，需要先用自己的 signing key 簽章，詳見下方「APK 簽名」。
+Release APK 在沒有設定 signing key 時為**未簽章**，無法直接安裝。設定方式詳見下方「APK簽名」；設定後輸出檔名會是 `app-release.apk`。
 
 不想自己 Build 的話，可以直接從 [GitHub Releases](https://github.com/Akiraoo/SimplePlayer-android-app/releases) 下載預先編譯好的 APK。
 
@@ -240,6 +240,37 @@ const val REPO = "Akiraoo/SimplePlayer-android-app"
 本專案不包含作者個人的 Android signing key。
 
 正式發布自己的 APK 時，請使用自己的 signing key。
+
+在專案根目錄（與 `settings.gradle.kts` 同一層）建立 `keystore.properties`：
+
+```properties
+storeFile=E:/keys/simpleplayer.jks
+storePassword=你的 keystore 密碼
+keyAlias=你的 key alias
+keyPassword=你的 key 密碼
+```
+
+`storeFile` 可以是絕對路徑，或相對於 `keystore.properties` 所在資料夾的路徑。
+
+`keystore.properties` 也可以放在專案以外的地方，例如和 keystore 放在一起，再到使用者層級的 Gradle 設定（Windows 為 `%USERPROFILE%\.gradle\gradle.properties`）加入：
+
+```properties
+simpleplayer.keystoreProperties=D:/keys/keystore.properties
+```
+
+或設定環境變數 `SIMPLEPLAYER_KEYSTORE_PROPERTIES` 指向該檔案。專案根目錄的 `keystore.properties` 會優先使用。
+
+設定完成後，`assembleRelease` 會直接產生已簽章的 APK：
+
+```text
+app/build/outputs/apk/release/app-release.apk
+```
+
+沒有 `keystore.properties` 時不影響 Build，只是 Release APK 不會簽章。
+
+也可以不建立這個檔案，改用 Android Studio 的 **Build → Generate Signed App Bundle / APK** 手動選擇 keystore。
+
+請務必備份 keystore。遺失後將無法再發布可以覆蓋安裝的更新。
 
 請不要將以下檔案提交到公開 Repository：
 

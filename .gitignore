@@ -1,21 +1,33 @@
-# Gradle
-.gradle/
-build/
-.kotlin/
-
 # Android Studio / IntelliJ
 .idea/
 *.iml
-local.properties
+.kotlin/
 captures/
-.cxx/
+.navigation/
 .externalNativeBuild/
+.cxx/
+local.properties
 
-# Signing keys (never commit)
+# Gradle / build outputs
+.gradle/
+build/
+app/build/
+build_output/
+*.apk
+*.aab
+*.ap_
+*.dex
+output-metadata.json
+
+# Local tools (downloadable)
+platform-tools/
+
+# Signing keys - back up separately, never commit
 *.jks
 *.keystore
 keystore.properties
 
-# Build outputs
-*.apk
-*.aab
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
