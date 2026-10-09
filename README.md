@@ -118,13 +118,13 @@ package your.package.name
 
 | 功能         | Port |
 | ---------- | ---: |
-| Web Server | 8787 |
-| Mobile API | 8788 |
+| Web Server | 50000 |
+| Mobile API | 55555 |
 
 Android Client 應連接 Mobile API，例如：
 
 ```text
-http://192.168.0.100:8788
+http://192.168.0.100:55555
 ```
 
 其中 `192.168.0.100` 必須替換成實際執行 Simple Player Server 的電腦 LAN IP。
@@ -136,7 +136,7 @@ http://192.168.0.100:8788
 App 同步時會讀取 Server 的 `/api/config`：
 
 * Server 有設定 `publicOrigin` 時，分享與下載連結會使用該公開網址，傳給區域網路以外的人也能開啟。
-* 沒有設定時，會以 App 填入的 API 位址推算 Web Player 網址（例如 `:8788` → `:8787`）。
+* 沒有設定時，會以 App 填入的 API 位址推算 Web Player 網址（例如 `:55555` → `:50000`）。
 
 ### 注意
 
@@ -152,7 +152,7 @@ localhost
 因此如果 Server 執行於電腦上，不能直接將：
 
 ```text
-http://localhost:8788
+http://localhost:55555
 ```
 
 填入 Android Client。
